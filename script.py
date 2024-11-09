@@ -7,48 +7,47 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 
-# Load Google Drive credentials from the GitHub Actions secret
-SERVICE_ACCOUNT_INFO = os.getenv('GOOGLE_CREDENTIAL')  # Loaded as JSON string from GitHub secrets
-credentials = service_account.Credentials.from_service_account_info(
-    eval(SERVICE_ACCOUNT_INFO),  # Convert JSON string to dictionary
-    scopes=['https://www.googleapis.com/auth/drive']
-)
-
-# Build the Google Drive service
-service = build('drive', 'v3', credentials=credentials)
-
-# Define the path for session caching
-SESSION_FILE_PATH = 'insta_session.json'
-
-def login_with_session(client):
+def login_with_session(client, username, password, session_file_path):
     """
     Login to Instagram using session caching. If a session file exists, it will be loaded;
     otherwise, a new login will be performed, and the session will be saved.
     
     Parameters:
     client (Client): The instagrapi Client instance.
+    username (str): Instagram username.
+    password (str): Instagram password.
+    session_file_path (str): Path for saving the session file.
     """
-    if os.path.exists(SESSION_FILE_PATH):
+    client.username = username
+    client.password = password
+    if os.path.exists(session_file_path):
         # Load session if available
-        client.load_settings(SESSION_FILE_PATH)
-        client.relogin()  # Ensures session is still valid
-        print("Session loaded successfully")
-    else:
-        # Login with credentials and save session
-        client.login(os.getenv('INSTAGRAM_USERNAME'), os.getenv('INSTAGRAM_PASSWORD'))
-        client.dump_settings(SESSION_FILE_PATH)  # Save the session
-        print("Logged in and session saved")
+        client.load_settings(session_file_path)
+        try:
+            client.relogin()
+            print("Session loaded successfully")
+            return
+        except Exception as e:
+            print(f"Relogin failed: {e}, performing a fresh login")
+    
+    # If relogin fails or session file doesn't exist, perform a fresh login
+    client.login(username, password)
+    client.dump_settings(session_file_path)
+    print("Logged in and session saved")
 
-def download_file_from_drive(file_name):
+
+def download_file_from_drive(service, folder_name, file_name):
     """
-    Downloads a file from the specified Google Drive folder "english_skills_101".
+    Downloads a file from the specified Google Drive folder.
 
     Parameters:
+    service: Authenticated Google Drive service object.
+    folder_name (str): The name of the folder in Google Drive.
     file_name (str): The name of the file to download from the folder.
-    """
-    folder_name = "english_skills_101"
     
-    # Step 1: Find the folder by name and get its ID
+    Returns:
+    file_path (str): Path to the downloaded file.
+    """
     folder_query = f"name = '{folder_name}' and mimeType = 'application/vnd.google-apps.folder'"
     folder_results = service.files().list(q=folder_query, fields="files(id, name)").execute()
     folders = folder_results.get('files', [])
@@ -60,7 +59,6 @@ def download_file_from_drive(file_name):
     folder_id = folders[0]['id']
     print(f"Found folder '{folder_name}' with ID: {folder_id}")
 
-    # Step 2: Find the file within the specified folder
     file_query = f"name = '{file_name}' and '{folder_id}' in parents"
     file_results = service.files().list(q=file_query, fields="files(id, name)").execute()
     files = file_results.get('files', [])
@@ -72,9 +70,8 @@ def download_file_from_drive(file_name):
     file_id = files[0]['id']
     print(f"Found file '{file_name}' with ID: {file_id}")
 
-    # Step 3: Download the file
     request = service.files().get_media(fileId=file_id)
-    file_path = file_name  # Save the file with the same name locally
+    file_path = file_name
     with io.FileIO(file_path, 'wb') as fh:
         downloader = MediaIoBaseDownload(fh, request)
         done = False
@@ -85,54 +82,73 @@ def download_file_from_drive(file_name):
     print(f"File '{file_name}' downloaded successfully to '{file_path}'.")
     return file_path
 
-def upload_video_and_story(video_path, caption):
+def upload_video_and_story(client, video_path, caption, username, password):
     """
     Uploads a video to Instagram as both a post and a story.
 
     Parameters:
+    client (Client): The instagrapi Client instance.
     video_path (str): The file path of the video to upload.
     caption (str): The caption to include with the post.
+    username (str): Instagram username.
+    password (str): Instagram password.
     """
-    # Initialize the Instagram client
-    cl = Client()
-
-    # Login using session
-    login_with_session(cl)
-
-    # Upload the video as a post
-    cl.video_upload(video_path, caption)
+    login_with_session(client, username, password, session_file_path='insta_session.json')
+    
+    client.video_upload(video_path, caption)
     print(f"Video uploaded as a post with caption: {caption}")
 
-    # Upload the video as a story
-    cl.video_upload_to_story(video_path)
+    client.video_upload_to_story(video_path)
     print("Video uploaded as a story")
 
-# Load the schedule from the CSV file
+
+# Environment Variables and Authentication
+
+SERVICE_ACCOUNT_INFO = os.getenv('GOOGLE_CREDENTIAL')
+
+# Load Instagram credentials from environment variables
+
+INSTAGRAM_USERNAME = os.getenv('INSTAGRAM_USERNAME')
+INSTAGRAM_PASSWORD = os.getenv('INSTAGRAM_PASSWORD')
+
+credentials = service_account.Credentials.from_service_account_info(
+    eval(SERVICE_ACCOUNT_INFO),
+    scopes=['https://www.googleapis.com/auth/drive']
+)
+service = build('drive', 'v3', credentials=credentials)
+
+# Instagram session file path
+SESSION_FILE_PATH = 'insta_session.json'
+
+# Load media schedule
 schedule_csv_path = 'media_schedule.csv'
 schedule_df = pd.read_csv(schedule_csv_path)
 
-# Get today's date
+# Get today's media schedule
 today_date = datetime.now().strftime('%Y-%m-%d')
-
-# Check if there is a media file for today
 media_row = schedule_df[schedule_df['Date'] == today_date]
 
+# Main execution flow
 if not media_row.empty:
-    file_name = media_row.iloc[0]['File Path']  # Column for file name in the Google Drive folder
-
-    # Download the video file from Google Drive
-    media_path = download_file_from_drive(file_name)
+    file_name = media_row.iloc[0]['File Path']
+    media_path = download_file_from_drive(service, folder_name='english_skills_101', file_name=file_name)
 
     if media_path:
-        # Read the caption from caption.txt
         with open('caption.txt', 'r') as caption_file:
             caption = caption_file.read().strip()
         
-        # Upload the media if found
-        upload_video_and_story(media_path, caption)
+        # Initialize Instagram client and upload video
+        instagram_client = Client()
+        upload_video_and_story(instagram_client, media_path, caption, INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD)
 
-        # Clean up the downloaded media file after uploading
+        # Clean up the downloaded video file
         os.remove(media_path)
         print("Temporary media file removed after upload.")
+        
+        # Remove the generated .jpg file with the same base name
+        jpg_file_path = media_path + '.jpg'
+        if os.path.exists(jpg_file_path):
+            os.remove(jpg_file_path)
+            print(f"Temporary file '{jpg_file_path}' removed after upload.")
 else:
     print("No media scheduled for today")
