@@ -118,7 +118,7 @@ today_date = datetime.now().strftime('%Y-%m-%d')
 media_row = schedule_df[schedule_df['Date'] == today_date]
 
 if not media_row.empty:
-    file_name = media_row.iloc[0]['File Name']  # Column for file name in the Google Drive folder
+    file_name = media_row.iloc[0]['File Path']  # Column for file name in the Google Drive folder
 
     # Download the video file from Google Drive
     media_path = download_file_from_drive(file_name)
