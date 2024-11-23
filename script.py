@@ -1,7 +1,6 @@
-
-# Main execution flow
 import io
 import os
+import random
 import pandas as pd
 from datetime import datetime, timezone
 from instagrapi import Client
@@ -29,7 +28,7 @@ def login_with_session(client, username, password, session_file_path):
         try:
             client.relogin()
             print("Session loaded successfully")
-            return
+            return client
         except Exception as e:
             print(f"Relogin failed: {e}, performing a fresh login")
 
@@ -37,6 +36,7 @@ def login_with_session(client, username, password, session_file_path):
     client.login(username, password)
     client.dump_settings(session_file_path)
     print("Logged in and session saved")
+    return client
 
 
 def download_file_from_drive(service, folder_name, file_name):
@@ -86,7 +86,7 @@ def download_file_from_drive(service, folder_name, file_name):
     return file_path
 
 
-def upload_video_and_story(client, video_path, caption, username, password):
+def upload_video_and_story(client, video_path, caption):
     """
     Uploads a video to Instagram as both a post and a story.
 
@@ -94,11 +94,7 @@ def upload_video_and_story(client, video_path, caption, username, password):
     client (Client): The instagrapi Client instance.
     video_path (str): The file path of the video to upload.
     caption (str): The caption to include with the post.
-    username (str): Instagram username.
-    password (str): Instagram password.
     """
-    login_with_session(client, username, password, session_file_path='insta_session.json')
-
     client.video_upload(video_path, caption)
     print(f"Video uploaded as a post with caption: {caption}")
 
@@ -110,7 +106,7 @@ def get_closest_media_row(schedule_csv_path):
     # Load the media schedule
     schedule_df = pd.read_csv(schedule_csv_path)
 
-    # Convert 'Date' column to datetime format and make it timezone-aware in UTC
+    # Convert 'Date & Time' column to datetime format and make it timezone-aware in UTC
     schedule_df['Date & Time'] = pd.to_datetime(schedule_df['Date & Time']).dt.tz_localize('UTC')
 
     # Get current time in UTC
@@ -123,45 +119,103 @@ def get_closest_media_row(schedule_csv_path):
     return closest_media_row
 
 
-# Environment Variables and Authentication
-SERVICE_ACCOUNT_INFO = os.getenv('GOOGLE_CREDENTIAL')
+def get_random_likers_from_targets(target_usernames, cl):
+    """
+    Randomly selects a target username from the input list, fetches their top 10 posts,
+    randomly selects one post, and returns the list of usernames who liked that post.
 
-# Load Instagram credentials from environment variables
-INSTAGRAM_USERNAME = os.getenv('INSTAGRAM_USERNAME')
-INSTAGRAM_PASSWORD = os.getenv('INSTAGRAM_PASSWORD')
+    Args:
+        target_usernames (list): List of Instagram usernames to choose from.
+        cl (Client): An authenticated instagrapi Client instance.
 
-credentials = service_account.Credentials.from_service_account_info(
-    eval(SERVICE_ACCOUNT_INFO),
-    scopes=['https://www.googleapis.com/auth/drive']
-)
-service = build('drive', 'v3', credentials=credentials)
+    Returns:
+        list: List of usernames who liked the randomly selected post.
+    """
+    try:
+        target_username = random.choice(target_usernames)
+        print(f"Randomly selected username: {target_username}")
 
-# Instagram session file path
-SESSION_FILE_PATH = 'insta_session.json'
+        user_id = cl.user_id_from_username(target_username)
+        print(f"User ID for {target_username}: {user_id}")
 
-# Load media schedule
-media_row = get_closest_media_row('media_schedule.csv')
+        media_list = cl.user_medias(user_id, amount=10)
+        if not media_list:
+            print(f"No posts found for {target_username}")
+            return []
 
-# Main execution flow
-if not media_row.empty:
-    file_name = media_row['File Path']
-    caption = media_row["Caption"]
-    media_path = download_file_from_drive(service, folder_name='english_skills_101', file_name=file_name)
+        random_post = random.choice(media_list)
+        print(f"Selected media: {random_post.pk}, URL: {random_post.thumbnail_url}")
 
-    if media_path:
+        likers = cl.media_likers(random_post.pk)
+        return [liker.username for liker in likers][:10]
+    except Exception as e:
+        print(f"Error fetching likers: {e}")
+        return []
 
-        # Initialize Instagram client and upload video
-        instagram_client = Client()
-        upload_video_and_story(instagram_client, media_path, caption, INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD)
 
-        # Clean up the downloaded video file
-        os.remove(media_path)
-        print("Temporary media file removed after upload.")
+def process_usernames(usernames, cl):
+    """
+    Processes a list of Instagram usernames:
+    - Checks if the account is public or private.
+    - If public and has >4 posts, likes the first 4 posts.
 
-        # Remove the generated .jpg file with the same base name
-        jpg_file_path = media_path + '.jpg'
-        if os.path.exists(jpg_file_path):
-            os.remove(jpg_file_path)
-            print(f"Temporary file '{jpg_file_path}' removed after upload.")
-else:
-    print("No media scheduled for today")
+    Args:
+        usernames (list): List of Instagram usernames.
+        cl (Client): Authenticated instagrapi Client instance.
+    """
+    for user in usernames:
+        try:
+            user_info = cl.user_info_by_username(user)
+            if not user_info.is_private and user_info.media_count > 4:
+                print(f"Processing public user: {user}")
+                media_list = cl.user_medias(user_info.pk, amount=4)
+                for media in media_list:
+                    cl.media_like(media.pk)
+                    print(f"Liked post: {media.pk}")
+        except Exception as e:
+            print(f"Error processing user {user}: {e}")
+
+
+# Main execution
+if __name__ == "__main__":
+    # Load environment variables or credentials
+    INSTAGRAM_USERNAME = os.getenv('INSTAGRAM_USERNAME')
+    INSTAGRAM_PASSWORD = os.getenv('INSTAGRAM_PASSWORD')
+    # Authenticate Google Drive client
+    SERVICE_ACCOUNT_INFO = os.getenv('GOOGLE_CREDENTIAL')
+    
+    SESSION_FILE_PATH = 'insta_session.json'
+
+    # Authenticate Instagram client
+    instagram_client = Client()
+    instagram_client = login_with_session(instagram_client, INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD, SESSION_FILE_PATH)
+
+
+    credentials = service_account.Credentials.from_service_account_info(
+        eval(SERVICE_ACCOUNT_INFO),
+        scopes=['https://www.googleapis.com/auth/drive']
+    )
+    service = build('drive', 'v3', credentials=credentials)
+
+    # Process the media schedule
+    media_row = get_closest_media_row('media_schedule.csv')
+    if not media_row.empty:
+        file_name = media_row['File Path']
+        caption = media_row["Caption"]
+        media_path = download_file_from_drive(service, folder_name='english_skills_101', file_name=file_name)
+
+        if media_path:
+            upload_video_and_story(instagram_client, media_path, caption)
+            os.remove(media_path)
+            jpg_file_path = media_path + '.jpg'
+            if os.path.exists(jpg_file_path):
+                os.remove(jpg_file_path)
+            
+            target_usernames = ["howimetyourmotherthefanpage", "itstedntracy", "himymfeeds", "himymaddiict", "friendsadiction"]
+            usernames = get_random_likers_from_targets(target_usernames, instagram_client)
+
+            if usernames:
+                instagram_client = Client()
+                instagram_client = login_with_session(instagram_client, INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD, SESSION_FILE_PATH)
+                process_usernames(usernames, instagram_client)
+
