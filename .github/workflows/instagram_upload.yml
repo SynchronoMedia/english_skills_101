@@ -3,8 +3,8 @@ name: Daily Instagram Post
 # Controls when the workflow will run
 on:
   schedule:
-    # Runs every 1 hour
-    - cron: '0 */1 * * *'
+    # Runs every 6 hour
+    - cron: '0 */6 * * *'
 
   workflow_dispatch:  # Allows manual triggering of the workflow
 
